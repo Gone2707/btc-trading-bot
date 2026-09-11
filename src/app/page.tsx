@@ -22,6 +22,9 @@ import {
   saveSelfTunerState,
 } from '../engine/selfTuner';
 import { Candle, MarketIntelligence, PortfolioState, SelfTunerState } from '../types/trading';
+import { CandlestickChart, Layers, History, Brain, SlidersHorizontal, Play, Pause } from 'lucide-react';
+
+type MobileTab = 'CHART' | 'TRADE' | 'HISTORY' | 'AI';
 
 export default function Dashboard() {
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -32,6 +35,8 @@ export default function Dashboard() {
   const [market, setMarket] = useState<MarketIntelligence>(() =>
     analyzeMarketRegime([], 65000)
   );
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('M1');
+  const [activeTab, setActiveTab] = useState<MobileTab>('CHART');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [lastNotification, setLastNotification] = useState<string | null>(null);
 
@@ -44,35 +49,39 @@ export default function Dashboard() {
   const candlesRef = useRef(candles);
   candlesRef.current = candles;
 
-  // 1. CARGA INICIAL DE VELAS HISTÓRICAS DE BINANCE
-  useEffect(() => {
-    let isMounted = true;
-    async function loadData() {
-      const initialKlines = await binanceFeed.fetchHistoricalKlines('BTCUSDT', '1m', 80);
-      if (isMounted && initialKlines.length > 0) {
-        setCandles(initialKlines);
-        const latestPrice = initialKlines[initialKlines.length - 1].close;
-        setCurrentPrice(latestPrice);
-        const initialMarket = analyzeMarketRegime(initialKlines, latestPrice);
-        setMarket(initialMarket);
-      }
+  // Carga de Velas según la temporalidad
+  const loadKlines = useCallback(async (interval: string) => {
+    const rawInterval = interval === 'M1' ? '1m' : interval === 'M5' ? '5m' : interval === 'M15' ? '15m' : '1h';
+    const initialKlines = await binanceFeed.fetchHistoricalKlines('BTCUSDT', rawInterval, 85);
+    if (initialKlines.length > 0) {
+      setCandles(initialKlines);
+      const latestPrice = initialKlines[initialKlines.length - 1].close;
+      setCurrentPrice(latestPrice);
+      const initialMarket = analyzeMarketRegime(initialKlines, latestPrice);
+      setMarket(initialMarket);
     }
-    loadData();
-    return () => {
-      isMounted = false;
-    };
   }, []);
 
-  // 2. CONEXIÓN A WEBSOCKETS DE BINANCE EN TIEMPO REAL
-  useEffect(() => {
-    binanceFeed.connect();
+  // Temporalidad cambiada por el usuario
+  const handleTimeframeChange = (tf: string) => {
+    setSelectedTimeframe(tf);
+    const rawInterval = tf === 'M1' ? '1m' : tf === 'M5' ? '5m' : tf === 'M15' ? '15m' : '1h';
+    binanceFeed.switchInterval(rawInterval);
+    loadKlines(tf);
+  };
 
-    // Ticker en vivo (precios submilisegundo)
+  useEffect(() => {
+    loadKlines('M1');
+  }, [loadKlines]);
+
+  // Conexión WebSocket a Binance
+  useEffect(() => {
+    binanceFeed.connect('1m');
+
     const unsubTicker = binanceFeed.subscribeTicker((price, change) => {
       setCurrentPrice(price);
       setPriceChange24h(change);
 
-      // Evaluar estrategia con cada tick de precio en vivo
       const currentPort = portfolioRef.current;
       const currentTuner = tunerRef.current;
       const currentCandles = candlesRef.current;
@@ -100,19 +109,16 @@ export default function Dashboard() {
       }
     });
 
-    // Velas de 1 minuto en vivo
     const unsubCandle = binanceFeed.subscribeCandle((candle) => {
       setCandles((prev) => {
         if (prev.length === 0) return [candle];
         const last = prev[prev.length - 1];
 
         if (last.time === candle.time) {
-          // Actualizar vela actual
           const updated = [...prev];
           updated[updated.length - 1] = candle;
           return updated;
         } else {
-          // Nueva vela completada
           return [...prev.slice(-120), candle];
         }
       });
@@ -125,7 +131,6 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Control: Iniciar / Pausar Bot
   const handleToggleBot = useCallback(() => {
     setPortfolio((prev) => {
       const next = { ...prev, isBotRunning: !prev.isBotRunning };
@@ -134,7 +139,6 @@ export default function Dashboard() {
     });
   }, []);
 
-  // Control: Resetear a $50 USD
   const handleResetAccount = useCallback(() => {
     if (window.confirm('¿Reiniciar saldo virtual a $50 USD? Se borrarán las órdenes abiertas y el historial.')) {
       const fresh = resetPortfolioState(50.0);
@@ -143,7 +147,6 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Control: Compra manual de tramo
   const handleManualTranche = useCallback(() => {
     if (portfolio.availableUsdt < 5) {
       alert('No tienes saldo USDT suficiente para comprar un tramo (Mínimo $5 USD).');
@@ -167,7 +170,7 @@ export default function Dashboard() {
       unrealizedPnlUsd: 0,
       unrealizedPnlPercent: 0,
       trailingMaxPrice: currentPrice,
-      notes: 'Compra manual de prueba',
+      notes: 'Compra manual de prueba MT5',
     };
 
     const nextPort: PortfolioState = {
@@ -179,10 +182,9 @@ export default function Dashboard() {
 
     setPortfolio(nextPort);
     savePortfolioState(nextPort);
-    setLastNotification(`Tramo manual ejecutado: Comprados ${amountBtc} BTC a $${currentPrice.toFixed(1)}`);
+    setLastNotification(`Tramo ejecutado: ${amountBtc} BTC a $${currentPrice.toFixed(1)}`);
   }, [portfolio, currentPrice]);
 
-  // Exportar estado a JSON
   const handleExportState = useCallback(() => {
     const data = {
       exportedAt: new Date().toISOString(),
@@ -199,7 +201,6 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   }, [portfolio, tuner, market]);
 
-  // Actualizar modo (Paper / Binance Real)
   const handleUpdateMode = useCallback((mode: 'PAPER' | 'LIVE_BINANCE') => {
     setPortfolio((prev) => {
       const next: PortfolioState = { ...prev, mode };
@@ -209,8 +210,8 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#0b0e14] text-slate-100 flex flex-col">
-      {/* Header Principal */}
+    <div className="min-h-screen bg-[#0e121a] text-slate-100 flex flex-col pb-16 md:pb-6">
+      {/* Header MT5 Principal */}
       <Header
         portfolio={portfolio}
         currentPrice={currentPrice}
@@ -220,7 +221,7 @@ export default function Dashboard() {
 
       {/* Notificación de evento del bot */}
       {lastNotification && (
-        <div className="bg-gradient-to-r from-amber-950/60 to-emerald-950/60 border-b border-[#1e2638] px-4 py-2 text-xs font-mono text-amber-200 flex items-center justify-between">
+        <div className="bg-gradient-to-r from-amber-950/80 to-emerald-950/80 border-b border-[#1e2638] px-4 py-1.5 text-xs font-mono text-amber-200 flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
             <span>{lastNotification}</span>
@@ -229,53 +230,167 @@ export default function Dashboard() {
             onClick={() => setLastNotification(null)}
             className="text-gray-400 hover:text-white text-[10px]"
           >
-            ✕ Cerrar
+            ✕
           </button>
         </div>
       )}
 
       {/* Contenido Principal */}
-      <main className="max-w-7xl mx-auto w-full p-3 sm:p-4 space-y-4 flex-1">
-        {/* 1. Tarjetas de Resumen del Portafolio ($50 inicial, BTC acumulado, PnL flotante) */}
+      <main className="max-w-7xl mx-auto w-full p-2.5 sm:p-4 space-y-3.5 flex-1">
+        {/* Resumen del Portafolio ($50 inicial, BTC acumulado, PnL flotante) */}
         <PortfolioSummary portfolio={portfolio} />
 
-        {/* 2. Cuadrícula Principal: Gráfico MT5 y Panel de IA */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Gráfico MT5 Interactivo en tiempo real */}
-          <div className="lg:col-span-2">
-            <Mt5Chart
-              candles={candles}
-              currentPrice={currentPrice}
-              openPositions={portfolio.openPositions}
-              closedTrades={portfolio.closedTrades}
-              symbol="BTC/USDT"
-            />
-          </div>
+        {/* VISTA MÓVIL CON PESTAÑAS NATIVAS DE MT5 (md:hidden) */}
+        <div className="md:hidden space-y-3">
+          {activeTab === 'CHART' && (
+            <div className="space-y-3">
+              <Mt5Chart
+                candles={candles}
+                currentPrice={currentPrice}
+                openPositions={portfolio.openPositions}
+                closedTrades={portfolio.closedTrades}
+                symbol="BTCUSDT"
+                selectedTimeframe={selectedTimeframe}
+                onTimeframeChange={handleTimeframeChange}
+                onQuickBuy={handleManualTranche}
+              />
+              <BotControls
+                portfolio={portfolio}
+                onToggleBot={handleToggleBot}
+                onResetAccount={handleResetAccount}
+                onManualTranche={handleManualTranche}
+                onExportState={handleExportState}
+              />
+            </div>
+          )}
 
-          {/* Panel de Inteligencia Artificial y Autoaprendizaje */}
-          <div className="lg:col-span-1 flex flex-col">
-            <AiIntelligencePanel market={market} tuner={tuner} />
-          </div>
+          {activeTab === 'TRADE' && (
+            <div className="space-y-3">
+              <OpenPositions
+                positions={portfolio.openPositions}
+                currentPrice={currentPrice}
+                availableUsdt={portfolio.availableUsdt}
+                totalEquityUsd={portfolio.totalEquityUsd}
+              />
+              <BotControls
+                portfolio={portfolio}
+                onToggleBot={handleToggleBot}
+                onResetAccount={handleResetAccount}
+                onManualTranche={handleManualTranche}
+                onExportState={handleExportState}
+              />
+            </div>
+          )}
+
+          {activeTab === 'HISTORY' && (
+            <TradeHistory
+              trades={portfolio.closedTrades}
+              initialCapital={portfolio.initialCapitalUsd}
+            />
+          )}
+
+          {activeTab === 'AI' && (
+            <div className="space-y-3">
+              <AiIntelligencePanel market={market} tuner={tuner} />
+              <BotControls
+                portfolio={portfolio}
+                onToggleBot={handleToggleBot}
+                onResetAccount={handleResetAccount}
+                onManualTranche={handleManualTranche}
+                onExportState={handleExportState}
+              />
+            </div>
+          )}
         </div>
 
-        {/* 3. Barra de Controles Rápidos del Bot */}
-        <BotControls
-          portfolio={portfolio}
-          onToggleBot={handleToggleBot}
-          onResetAccount={handleResetAccount}
-          onManualTranche={handleManualTranche}
-          onExportState={handleExportState}
-        />
+        {/* VISTA ESCRITORIO / TABLET: ESTILO MT5 WEBTERMINAL (hidden md:block) */}
+        <div className="hidden md:block space-y-3.5">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+            <div className="lg:col-span-2">
+              <Mt5Chart
+                candles={candles}
+                currentPrice={currentPrice}
+                openPositions={portfolio.openPositions}
+                closedTrades={portfolio.closedTrades}
+                symbol="BTCUSDT"
+                selectedTimeframe={selectedTimeframe}
+                onTimeframeChange={handleTimeframeChange}
+                onQuickBuy={handleManualTranche}
+              />
+            </div>
+            <div className="lg:col-span-1">
+              <AiIntelligencePanel market={market} tuner={tuner} />
+            </div>
+          </div>
 
-        {/* 4. Operativas Abiertas Estilo MT5 (Ticket, Invertido, Progreso TP, PnL Flotante) */}
-        <OpenPositions
-          positions={portfolio.openPositions}
-          currentPrice={currentPrice}
-        />
+          <BotControls
+            portfolio={portfolio}
+            onToggleBot={handleToggleBot}
+            onResetAccount={handleResetAccount}
+            onManualTranche={handleManualTranche}
+            onExportState={handleExportState}
+          />
 
-        {/* 5. Historial de Operaciones Cerradas */}
-        <TradeHistory trades={portfolio.closedTrades} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+            <OpenPositions
+              positions={portfolio.openPositions}
+              currentPrice={currentPrice}
+              availableUsdt={portfolio.availableUsdt}
+              totalEquityUsd={portfolio.totalEquityUsd}
+            />
+            <TradeHistory
+              trades={portfolio.closedTrades}
+              initialCapital={portfolio.initialCapitalUsd}
+            />
+          </div>
+        </div>
       </main>
+
+      {/* BARRA DE NAVEGACIÓN INFERIOR ESTILO MT5 MOBILE (Visible en Teléfonos) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#131722]/95 backdrop-blur-md border-t border-[#1e2638] px-2 py-1.5 flex items-center justify-around shadow-2xl">
+        <button
+          onClick={() => setActiveTab('CHART')}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-lg transition-colors ${
+            activeTab === 'CHART' ? 'text-amber-400 font-bold' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          <CandlestickChart className="w-5 h-5" />
+          <span className="text-[10px] mt-0.5 font-mono">Gráfico</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('TRADE')}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-lg transition-colors relative ${
+            activeTab === 'TRADE' ? 'text-amber-400 font-bold' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          <Layers className="w-5 h-5" />
+          <span className="text-[10px] mt-0.5 font-mono">Trading</span>
+          {portfolio.openPositions.length > 0 && (
+            <span className="absolute top-0.5 right-2 w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab('HISTORY')}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-lg transition-colors ${
+            activeTab === 'HISTORY' ? 'text-amber-400 font-bold' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          <History className="w-5 h-5" />
+          <span className="text-[10px] mt-0.5 font-mono">Historial</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('AI')}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-lg transition-colors ${
+            activeTab === 'AI' ? 'text-amber-400 font-bold' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          <Brain className="w-5 h-5" />
+          <span className="text-[10px] mt-0.5 font-mono">IA & Bot</span>
+        </button>
+      </nav>
 
       {/* Modal de Configuración */}
       <SettingsModal
@@ -284,11 +399,6 @@ export default function Dashboard() {
         portfolio={portfolio}
         onUpdateMode={handleUpdateMode}
       />
-
-      {/* Footer */}
-      <footer className="border-t border-[#1e2638] py-4 px-4 text-center text-xs text-gray-500">
-        <p>BTC HODL Grid AI Bot • Cero Costo • Desplegable en Vercel • Conexión Pública Binance WebSockets</p>
-      </footer>
     </div>
   );
 }
