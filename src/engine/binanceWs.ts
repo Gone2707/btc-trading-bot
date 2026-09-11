@@ -1,22 +1,38 @@
 import { Candle } from '../types/trading';
 
-export type TickerCallback = (price: number, change24h: number, high24h: number, low24h: number) => void;
+export type TickerCallback = (
+  price: number,
+  change24h: number,
+  high24h: number,
+  low24h: number,
+  latencyMs: number
+) => void;
+
 export type CandleCallback = (candle: Candle) => void;
 
 class BinanceMarketFeed {
-  private tickerWs: WebSocket | null = null;
-  private klineWs: WebSocket | null = null;
+  private combinedWs: WebSocket | null = null;
   private tickerListeners: TickerCallback[] = [];
   private candleListeners: CandleCallback[] = [];
   private isConnecting = false;
   private reconnectTimeout: any = null;
   private currentInterval = '1m';
+  private lastChange24h = 0;
+  private lastHigh24h = 0;
+  private lastLow24h = 0;
 
-  public async fetchHistoricalKlines(symbol = 'BTCUSDT', interval = '1m', limit = 100): Promise<Candle[]> {
+  public async fetchHistoricalKlines(symbol = 'BTCUSDT', interval = '1m', limit = 80): Promise<Candle[]> {
     this.currentInterval = interval;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500); // 3.5s max timeout
+
     try {
-      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
-      if (!res.ok) throw new Error(`Binance REST status: ${res.status}`);
+      const res = await fetch(
+        `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timeout);
+      if (!res.ok) throw new Error(`Binance status: ${res.status}`);
       const data = await res.json();
       return data.map((item: any[]) => ({
         time: Math.floor(item[0] / 1000),
@@ -28,9 +44,12 @@ class BinanceMarketFeed {
         isClosed: true,
       }));
     } catch (e) {
-      console.warn('Fallback a Binance alternative endpoint...', e);
+      clearTimeout(timeout);
+      console.warn('Fallback rápido a endpoint alternativo de Binance...', e);
       try {
-        const res2 = await fetch(`https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+        const res2 = await fetch(
+          `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+        );
         const data2 = await res2.json();
         return data2.map((item: any[]) => ({
           time: Math.floor(item[0] / 1000),
@@ -48,6 +67,10 @@ class BinanceMarketFeed {
     }
   }
 
+  /**
+   * Conexión Ultra-Rápida con Stream Combinado Multiplexado de Binance
+   * Utiliza aggTrade para recibir CADA TICK DE PRECIO EN TIEMPO REAL (sub-100ms)
+   */
   public connect(interval = '1m'): void {
     if (typeof window === 'undefined') return;
     this.currentInterval = interval;
@@ -55,80 +78,77 @@ class BinanceMarketFeed {
     this.isConnecting = true;
 
     try {
-      // 1. Ticker WebSocket en vivo
-      this.tickerWs = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@ticker');
-      
-      this.tickerWs.onmessage = (event) => {
+      // Stream combinado oficial de Binance: aggTrade (ticks instantáneos) + ticker (24h) + kline (velas)
+      const streamUrl = `wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@ticker/btcusdt@kline_${interval}`;
+      this.combinedWs = new WebSocket(streamUrl);
+
+      this.combinedWs.onopen = () => {
+        this.isConnecting = false;
+      };
+
+      this.combinedWs.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          const price = parseFloat(data.c);
-          const change24h = parseFloat(data.P);
-          const high24h = parseFloat(data.h);
-          const low24h = parseFloat(data.l);
-          this.tickerListeners.forEach(cb => cb(price, change24h, high24h, low24h));
+          const payload = JSON.parse(event.data);
+          const stream = payload.stream;
+          const data = payload.data;
+          const now = Date.now();
+
+          // 1. TICKS ULTRA-RÁPIDOS DE PRECIO (aggTrade)
+          if (stream === 'btcusdt@aggTrade') {
+            const price = parseFloat(data.p);
+            const serverTime = data.T || data.E || now;
+            const latencyMs = Math.max(5, Math.min(999, now - serverTime));
+
+            this.tickerListeners.forEach(cb =>
+              cb(price, this.lastChange24h, this.lastHigh24h, this.lastLow24h, latencyMs)
+            );
+          }
+
+          // 2. ESTADÍSTICAS 24H (ticker)
+          else if (stream === 'btcusdt@ticker') {
+            this.lastChange24h = parseFloat(data.P);
+            this.lastHigh24h = parseFloat(data.h);
+            this.lastLow24h = parseFloat(data.l);
+            const price = parseFloat(data.c);
+            const serverTime = data.E || now;
+            const latencyMs = Math.max(5, Math.min(999, now - serverTime));
+
+            this.tickerListeners.forEach(cb =>
+              cb(price, this.lastChange24h, this.lastHigh24h, this.lastLow24h, latencyMs)
+            );
+          }
+
+          // 3. VELAS DE TIEMPO REAL (kline)
+          else if (stream && stream.startsWith('btcusdt@kline')) {
+            const k = data.k;
+            const candle: Candle = {
+              time: Math.floor(k.t / 1000),
+              open: parseFloat(k.o),
+              high: parseFloat(k.h),
+              low: parseFloat(k.l),
+              close: parseFloat(k.c),
+              volume: parseFloat(k.v),
+              isClosed: k.x,
+            };
+            this.candleListeners.forEach(cb => cb(candle));
+          }
         } catch (err) {
-          console.error('Error parseando ticker:', err);
+          console.error('Error parseando stream WebSocket:', err);
         }
       };
 
-      this.tickerWs.onerror = () => this.scheduleReconnect();
-      this.tickerWs.onclose = () => this.scheduleReconnect();
-
-      // 2. Velas Klines en vivo según intervalo
-      this.klineWs = new WebSocket(`wss://stream.binance.com:9443/ws/btcusdt@kline_${interval}`);
-
-      this.klineWs.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const k = data.k;
-          const candle: Candle = {
-            time: Math.floor(k.t / 1000),
-            open: parseFloat(k.o),
-            high: parseFloat(k.h),
-            low: parseFloat(k.l),
-            close: parseFloat(k.c),
-            volume: parseFloat(k.v),
-            isClosed: k.x,
-          };
-          this.candleListeners.forEach(cb => cb(candle));
-        } catch (err) {
-          console.error('Error parseando kline:', err);
-        }
-      };
-
-      this.klineWs.onerror = () => this.scheduleReconnect();
-      this.klineWs.onclose = () => this.scheduleReconnect();
+      this.combinedWs.onerror = () => this.scheduleReconnect();
+      this.combinedWs.onclose = () => this.scheduleReconnect();
 
     } catch (e) {
-      console.error('Error conectando WebSockets:', e);
+      console.error('Error inicializando WebSocket:', e);
       this.scheduleReconnect();
     }
   }
 
   public switchInterval(newInterval: string): void {
     this.currentInterval = newInterval;
-    if (this.klineWs) {
-      this.klineWs.close();
-      this.klineWs = new WebSocket(`wss://stream.binance.com:9443/ws/btcusdt@kline_${newInterval}`);
-      this.klineWs.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const k = data.k;
-          const candle: Candle = {
-            time: Math.floor(k.t / 1000),
-            open: parseFloat(k.o),
-            high: parseFloat(k.h),
-            low: parseFloat(k.l),
-            close: parseFloat(k.c),
-            volume: parseFloat(k.v),
-            isClosed: k.x,
-          };
-          this.candleListeners.forEach(cb => cb(candle));
-        } catch (err) {
-          console.error('Error parseando kline:', err);
-        }
-      };
-    }
+    this.connect(newInterval);
   }
 
   private scheduleReconnect(): void {
@@ -137,7 +157,7 @@ class BinanceMarketFeed {
       this.reconnectTimeout = null;
       this.isConnecting = false;
       this.connect(this.currentInterval);
-    }, 4000);
+    }, 2500);
   }
 
   public subscribeTicker(cb: TickerCallback): () => void {
@@ -155,13 +175,9 @@ class BinanceMarketFeed {
   }
 
   public disconnect(): void {
-    if (this.tickerWs) {
-      this.tickerWs.close();
-      this.tickerWs = null;
-    }
-    if (this.klineWs) {
-      this.klineWs.close();
-      this.klineWs = null;
+    if (this.combinedWs) {
+      this.combinedWs.close();
+      this.combinedWs = null;
     }
     this.isConnecting = false;
   }

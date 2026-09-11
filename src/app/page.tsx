@@ -73,20 +73,31 @@ export default function Dashboard() {
     loadKlines('M1');
   }, [loadKlines]);
 
+  const [latencyMs, setLatencyMs] = useState<number>(35);
+  const lastSaveTimeRef = useRef<number>(0);
+  const lastRegimeCalcRef = useRef<number>(0);
+
   // Conexión WebSocket a Binance y evaluación autónoma permanente
   useEffect(() => {
     binanceFeed.connect('1m');
 
-    const unsubTicker = binanceFeed.subscribeTicker((price, change) => {
+    const unsubTicker = binanceFeed.subscribeTicker((price, change, high, low, latency) => {
       setCurrentPrice(price);
       setPriceChange24h(change);
+      setLatencyMs(latency);
 
+      const now = Date.now();
       const currentPort = portfolioRef.current;
       const currentTuner = tunerRef.current;
       const currentCandles = candlesRef.current;
 
-      const currentMarket = analyzeMarketRegime(currentCandles, price);
-      setMarket(currentMarket);
+      // Throttle cálculo de indicadores complejos a cada 400ms para mantener 60 FPS
+      let currentMarket = market;
+      if (now - lastRegimeCalcRef.current > 400) {
+        currentMarket = analyzeMarketRegime(currentCandles, price);
+        setMarket(currentMarket);
+        lastRegimeCalcRef.current = now;
+      }
 
       // Evaluación cuantitativa autónoma sin intervención humana
       const { decision, updatedPortfolio, updatedTuner } = evaluateStrategy(
@@ -97,15 +108,20 @@ export default function Dashboard() {
       );
 
       setPortfolio(updatedPortfolio);
-      savePortfolioState(updatedPortfolio);
+
+      // Guardar en localStorage inmediatamente si hubo COMPRA o VENTA; si no, debounced cada 3s
+      if (decision.action !== 'HOLD') {
+        savePortfolioState(updatedPortfolio);
+        setLastNotification(decision.reason);
+        lastSaveTimeRef.current = now;
+      } else if (now - lastSaveTimeRef.current > 3000) {
+        savePortfolioState(updatedPortfolio);
+        lastSaveTimeRef.current = now;
+      }
 
       if (updatedTuner !== currentTuner) {
         setTuner(updatedTuner);
         saveSelfTunerState(updatedTuner);
-      }
-
-      if (decision.action !== 'HOLD') {
-        setLastNotification(decision.reason);
       }
     });
 
@@ -178,6 +194,7 @@ export default function Dashboard() {
         portfolio={portfolio}
         currentPrice={currentPrice}
         priceChange24h={priceChange24h}
+        latencyMs={latencyMs}
         onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
