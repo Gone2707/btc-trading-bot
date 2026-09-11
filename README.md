@@ -53,23 +53,18 @@ npm run dev
 
 ---
 
-## 📱 Despliegue en Vercel (100% Gratuito)
+## 📱 Despliegue en Vercel (100% Gratuito y en 1 Clic)
 
-Para verlo y controlarlo desde tu teléfono móvil sin pagar hosting:
+El código ya está publicado en tu repositorio oficial de GitHub: [https://github.com/Gone2707/btc-trading-bot](https://github.com/Gone2707/btc-trading-bot).
 
-1. Sube este repositorio a tu cuenta de GitHub:
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: bot btc hodl grid ai mt5 dashboard"
-   git remote add origin https://github.com/TU_USUARIO/btc-trading-bot.git
-   git branch -M main
-   git push -u origin main
-   ```
-2. Entra en [Vercel.com](https://vercel.com) con tu cuenta de GitHub.
-3. Haz clic en **"Add New Project"** e importa el repositorio `btc-trading-bot`.
-4. Haz clic en **"Deploy"**.
-5. ¡Listo! Vercel te dará una URL (ej. `https://btc-trading-bot.vercel.app`) que puedes abrir en el navegador de tu teléfono móvil.
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FGone2707%2Fbtc-trading-bot)
+
+### Paso a paso para desplegar:
+1. Haz clic directamente en el botón **"Deploy with Vercel"** o entra en [vercel.com/new](https://vercel.com/new).
+2. Conéctate con tu cuenta de GitHub (`Gone2707`).
+3. Verás listado tu repositorio **`btc-trading-bot`** -> haz clic en **"Import"**.
+4. Haz clic en **"Deploy"** (no necesitas configurar variables de entorno).
+5. ¡Listo! En 60 segundos tendrás tu enlace público (ejemplo: `https://btc-trading-bot.vercel.app`) para abrirlo y vigilarlo desde tu teléfono móvil.
 
 ---
 
