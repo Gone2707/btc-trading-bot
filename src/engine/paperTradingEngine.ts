@@ -1,6 +1,5 @@
 import { PortfolioState } from '../types/trading';
 
-const PORTFOLIO_STORAGE_KEY = 'btc_bot_portfolio_v1';
 export const DEFAULT_INITIAL_BALANCE = 50.0; // $50 USD solicitados por el usuario
 
 export function getInitialPortfolioState(): PortfolioState {
@@ -24,35 +23,32 @@ export function getInitialPortfolioState(): PortfolioState {
   };
 }
 
+/**
+ * 100% EN MEMORIA (RAM) - CERO USO DE LOCALSTORAGE
+ * No ocupa memoria persistente en el navegador.
+ */
 export function loadPortfolioState(): PortfolioState {
-  if (typeof window === 'undefined') return getInitialPortfolioState();
-  try {
-    const saved = localStorage.getItem(PORTFOLIO_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Garantizar retrocompatibilidad
-      return {
-        ...getInitialPortfolioState(),
-        ...parsed,
-      };
-    }
-  } catch (e) {
-    console.error('Error cargando estado del portafolio:', e);
-  }
   return getInitialPortfolioState();
 }
 
-export function savePortfolioState(state: PortfolioState): void {
+export function savePortfolioState(_state: PortfolioState): void {
+  // Sin operaciones de almacenamiento en disco / localStorage
+}
+
+export function clearBrowserStorage(): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(PORTFOLIO_STORAGE_KEY, JSON.stringify(state));
+    localStorage.removeItem('btc_bot_portfolio_v1');
+    localStorage.removeItem('btc_bot_selftuner_v1');
+    localStorage.removeItem('btc_bot_settings_v1');
   } catch (e) {
-    console.error('Error guardando estado del portafolio:', e);
+    // Silencioso
   }
 }
 
 export function resetPortfolioState(initialBalance: number = DEFAULT_INITIAL_BALANCE): PortfolioState {
-  const freshState: PortfolioState = {
+  clearBrowserStorage();
+  return {
     initialCapitalUsd: initialBalance,
     availableUsdt: initialBalance,
     heldBtc: 0,
@@ -70,6 +66,4 @@ export function resetPortfolioState(initialBalance: number = DEFAULT_INITIAL_BAL
     mode: 'PAPER',
     isBotRunning: true,
   };
-  savePortfolioState(freshState);
-  return freshState;
 }

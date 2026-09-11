@@ -14,13 +14,10 @@ import { analyzeMarketRegime } from '../engine/regimeClassifier';
 import { evaluateStrategy } from '../engine/adaptiveGridStrategy';
 import {
   loadPortfolioState,
-  savePortfolioState,
   resetPortfolioState,
+  clearBrowserStorage,
 } from '../engine/paperTradingEngine';
-import {
-  loadSelfTunerState,
-  saveSelfTunerState,
-} from '../engine/selfTuner';
+import { loadSelfTunerState } from '../engine/selfTuner';
 import { Candle, MarketIntelligence, PortfolioState, SelfTunerState } from '../types/trading';
 import { CandlestickChart, Layers, History, Brain, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
@@ -69,15 +66,15 @@ export default function Dashboard() {
     loadKlines(tf);
   };
 
+  const [latencyMs, setLatencyMs] = useState<number>(35);
+  const lastRegimeCalcRef = useRef<number>(0);
+
   useEffect(() => {
+    clearBrowserStorage();
     loadKlines('M1');
   }, [loadKlines]);
 
-  const [latencyMs, setLatencyMs] = useState<number>(35);
-  const lastSaveTimeRef = useRef<number>(0);
-  const lastRegimeCalcRef = useRef<number>(0);
-
-  // Conexión WebSocket a Binance y evaluación autónoma permanente
+  // Conexión WebSocket a Binance y evaluación autónoma permanente (100% en RAM)
   useEffect(() => {
     binanceFeed.connect('1m');
 
@@ -109,19 +106,12 @@ export default function Dashboard() {
 
       setPortfolio(updatedPortfolio);
 
-      // Guardar en localStorage inmediatamente si hubo COMPRA o VENTA; si no, debounced cada 3s
       if (decision.action !== 'HOLD') {
-        savePortfolioState(updatedPortfolio);
         setLastNotification(decision.reason);
-        lastSaveTimeRef.current = now;
-      } else if (now - lastSaveTimeRef.current > 3000) {
-        savePortfolioState(updatedPortfolio);
-        lastSaveTimeRef.current = now;
       }
 
       if (updatedTuner !== currentTuner) {
         setTuner(updatedTuner);
-        saveSelfTunerState(updatedTuner);
       }
     });
 
@@ -148,18 +138,14 @@ export default function Dashboard() {
   }, []);
 
   const handleToggleBot = useCallback(() => {
-    setPortfolio((prev) => {
-      const next = { ...prev, isBotRunning: !prev.isBotRunning };
-      savePortfolioState(next);
-      return next;
-    });
+    setPortfolio((prev) => ({ ...prev, isBotRunning: !prev.isBotRunning }));
   }, []);
 
   const handleResetAccount = useCallback(() => {
-    if (window.confirm('¿Reiniciar saldo virtual a $50 USD? Se borrarán las órdenes abiertas y el historial.')) {
+    if (window.confirm('¿Reiniciar saldo virtual a $50 USD? Se restablecerán las órdenes a cero.')) {
       const fresh = resetPortfolioState(50.0);
       setPortfolio(fresh);
-      setLastNotification('Saldo reiniciado a $50.00 USD con éxito.');
+      setLastNotification('Saldo reiniciado a $50.00 USD en memoria.');
     }
   }, []);
 
@@ -180,11 +166,7 @@ export default function Dashboard() {
   }, [portfolio, tuner, market]);
 
   const handleUpdateMode = useCallback((mode: 'PAPER' | 'LIVE_BINANCE') => {
-    setPortfolio((prev) => {
-      const next: PortfolioState = { ...prev, mode };
-      savePortfolioState(next);
-      return next;
-    });
+    setPortfolio((prev) => ({ ...prev, mode }));
   }, []);
 
   return (
