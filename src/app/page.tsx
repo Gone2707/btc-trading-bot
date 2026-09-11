@@ -22,7 +22,7 @@ import {
   saveSelfTunerState,
 } from '../engine/selfTuner';
 import { Candle, MarketIntelligence, PortfolioState, SelfTunerState } from '../types/trading';
-import { CandlestickChart, Layers, History, Brain, SlidersHorizontal, Play, Pause } from 'lucide-react';
+import { CandlestickChart, Layers, History, Brain, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
 type MobileTab = 'CHART' | 'TRADE' | 'HISTORY' | 'AI';
 
@@ -62,7 +62,6 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Temporalidad cambiada por el usuario
   const handleTimeframeChange = (tf: string) => {
     setSelectedTimeframe(tf);
     const rawInterval = tf === 'M1' ? '1m' : tf === 'M5' ? '5m' : tf === 'M15' ? '15m' : '1h';
@@ -74,7 +73,7 @@ export default function Dashboard() {
     loadKlines('M1');
   }, [loadKlines]);
 
-  // Conexión WebSocket a Binance
+  // Conexión WebSocket a Binance y evaluación autónoma permanente
   useEffect(() => {
     binanceFeed.connect('1m');
 
@@ -89,6 +88,7 @@ export default function Dashboard() {
       const currentMarket = analyzeMarketRegime(currentCandles, price);
       setMarket(currentMarket);
 
+      // Evaluación cuantitativa autónoma sin intervención humana
       const { decision, updatedPortfolio, updatedTuner } = evaluateStrategy(
         currentPort,
         currentMarket,
@@ -147,44 +147,6 @@ export default function Dashboard() {
     }
   }, []);
 
-  const handleManualTranche = useCallback(() => {
-    if (portfolio.availableUsdt < 5) {
-      alert('No tienes saldo USDT suficiente para comprar un tramo (Mínimo $5 USD).');
-      return;
-    }
-    const trancheUsd = Math.min(portfolio.availableUsdt, 15);
-    const fee = trancheUsd * 0.001;
-    const amountBtc = Number(((trancheUsd - fee) / currentPrice).toFixed(6));
-    const targetSellPrice = Number((currentPrice * 1.018).toFixed(2));
-
-    const newPos = {
-      id: `TK-${Math.floor(1000 + Math.random() * 9000)}`,
-      trancheIndex: portfolio.openPositions.length,
-      buyPrice: currentPrice,
-      targetSellPrice,
-      amountBtc,
-      investedUsd: trancheUsd,
-      timestamp: Date.now(),
-      status: 'OPEN' as const,
-      currentPrice,
-      unrealizedPnlUsd: 0,
-      unrealizedPnlPercent: 0,
-      trailingMaxPrice: currentPrice,
-      notes: 'Compra manual de prueba MT5',
-    };
-
-    const nextPort: PortfolioState = {
-      ...portfolio,
-      availableUsdt: Number((portfolio.availableUsdt - trancheUsd).toFixed(2)),
-      heldBtc: Number((portfolio.heldBtc + amountBtc).toFixed(6)),
-      openPositions: [...portfolio.openPositions, newPos],
-    };
-
-    setPortfolio(nextPort);
-    savePortfolioState(nextPort);
-    setLastNotification(`Tramo ejecutado: ${amountBtc} BTC a $${currentPrice.toFixed(1)}`);
-  }, [portfolio, currentPrice]);
-
   const handleExportState = useCallback(() => {
     const data = {
       exportedAt: new Date().toISOString(),
@@ -219,6 +181,20 @@ export default function Dashboard() {
         onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
+      {/* Banner de Modo 100% Autónomo */}
+      <div className="bg-[#131722] border-b border-[#1e2638] px-4 py-2 flex items-center justify-between text-xs font-mono text-gray-300">
+        <div className="flex items-center space-x-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="text-emerald-400 font-bold">OPERACIÓN 100% AUTÓNOMA POR IA:</span>
+          <span className="hidden sm:inline text-gray-400">
+            El bot analiza el mercado y ejecuta compras/ventas automáticamente sin intervención manual. Regla fija: Jamás vende a pérdida.
+          </span>
+        </div>
+        <div className="text-[11px] text-amber-400 font-semibold hidden md:block">
+          Spot Seguro • 0% Liquidación
+        </div>
+      </div>
+
       {/* Notificación de evento del bot */}
       {lastNotification && (
         <div className="bg-gradient-to-r from-amber-950/80 to-emerald-950/80 border-b border-[#1e2638] px-4 py-1.5 text-xs font-mono text-amber-200 flex items-center justify-between">
@@ -252,13 +228,11 @@ export default function Dashboard() {
                 symbol="BTCUSDT"
                 selectedTimeframe={selectedTimeframe}
                 onTimeframeChange={handleTimeframeChange}
-                onQuickBuy={handleManualTranche}
               />
               <BotControls
                 portfolio={portfolio}
                 onToggleBot={handleToggleBot}
                 onResetAccount={handleResetAccount}
-                onManualTranche={handleManualTranche}
                 onExportState={handleExportState}
               />
             </div>
@@ -276,7 +250,6 @@ export default function Dashboard() {
                 portfolio={portfolio}
                 onToggleBot={handleToggleBot}
                 onResetAccount={handleResetAccount}
-                onManualTranche={handleManualTranche}
                 onExportState={handleExportState}
               />
             </div>
@@ -296,7 +269,6 @@ export default function Dashboard() {
                 portfolio={portfolio}
                 onToggleBot={handleToggleBot}
                 onResetAccount={handleResetAccount}
-                onManualTranche={handleManualTranche}
                 onExportState={handleExportState}
               />
             </div>
@@ -315,7 +287,6 @@ export default function Dashboard() {
                 symbol="BTCUSDT"
                 selectedTimeframe={selectedTimeframe}
                 onTimeframeChange={handleTimeframeChange}
-                onQuickBuy={handleManualTranche}
               />
             </div>
             <div className="lg:col-span-1">
@@ -327,7 +298,6 @@ export default function Dashboard() {
             portfolio={portfolio}
             onToggleBot={handleToggleBot}
             onResetAccount={handleResetAccount}
-            onManualTranche={handleManualTranche}
             onExportState={handleExportState}
           />
 
@@ -346,7 +316,7 @@ export default function Dashboard() {
         </div>
       </main>
 
-      {/* BARRA DE NAVEGACIÓN INFERIOR ESTILO MT5 MOBILE (Visible en Teléfonos) */}
+      {/* BARRA DE NAVEGACIÓN INFERIOR ESTILO MT5 MOBILE */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#131722]/95 backdrop-blur-md border-t border-[#1e2638] px-2 py-1.5 flex items-center justify-around shadow-2xl">
         <button
           onClick={() => setActiveTab('CHART')}

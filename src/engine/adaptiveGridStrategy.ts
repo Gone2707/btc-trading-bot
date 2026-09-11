@@ -8,7 +8,7 @@ import {
 } from '../types/trading';
 import { trainAndOptimize } from './selfTuner';
 
-const BINANCE_FEE_RATE = 0.001; // 0.1% spot fee por operación (maker/taker standard)
+const BINANCE_FEE_RATE = 0.001; // 0.1% spot fee por operación en Binance
 
 export interface StrategyDecision {
   action: 'BUY' | 'SELL' | 'HOLD';
@@ -18,6 +18,10 @@ export interface StrategyDecision {
   reason: string;
 }
 
+/**
+ * Motor de Estrategia 100% Autónomo Conservador
+ * Misión: Analizar a fondo, cero intervención manual, ventas estrictamente en beneficio neto positivo.
+ */
 export function evaluateStrategy(
   portfolio: PortfolioState,
   market: MarketIntelligence,
@@ -27,7 +31,7 @@ export function evaluateStrategy(
   const updatedPortfolio: PortfolioState = { ...portfolio };
   let updatedTuner = tuner;
 
-  // Actualizar precio actual y PnL no realizado de todas las posiciones abiertas
+  // 1. Actualizar PnL flotante y valor en tiempo real de las posiciones abiertas
   let totalUnrealizedUsd = 0;
   let totalBtcHeld = 0;
 
@@ -52,7 +56,7 @@ export function evaluateStrategy(
   });
 
   updatedPortfolio.currentBtcPrice = currentPrice;
-  updatedPortfolio.heldBtc = totalBtcHeld;
+  updatedPortfolio.heldBtc = Number(totalBtcHeld.toFixed(6));
   updatedPortfolio.unrealizedPnlUsd = Number(totalUnrealizedUsd.toFixed(2));
   updatedPortfolio.totalEquityUsd = Number(
     (updatedPortfolio.availableUsdt + totalBtcHeld * currentPrice).toFixed(2)
@@ -65,7 +69,7 @@ export function evaluateStrategy(
 
   if (!portfolio.isBotRunning) {
     return {
-      decision: { action: 'HOLD', reason: 'Bot en pausa manual por el usuario.' },
+      decision: { action: 'HOLD', reason: 'Bot pausado por el usuario.' },
       updatedPortfolio,
       updatedTuner,
     };
@@ -75,48 +79,49 @@ export function evaluateStrategy(
   // REGLA 1: EVALUAR VENTAS (TAKE PROFIT ESTRICTO - NUNCA A PÉRDIDA)
   // -------------------------------------------------------------
   for (const pos of updatedPortfolio.openPositions) {
-    const minAcceptablePrice = pos.buyPrice * (1 + tuner.minProfitHurdlePercent / 100 + BINANCE_FEE_RATE * 2);
+    // Cálculo riguroso: Precio de compra + Margen de beneficio neto mínimo (0.6%+) + Comisiones de Binance ida y vuelta (0.2%)
+    const minAcceptablePrice = pos.buyPrice * (1 + (tuner.minProfitHurdlePercent / 100) + (BINANCE_FEE_RATE * 2));
 
-    // ¿El precio actual supera el precio objetivo y el mínimo de seguridad?
+    // ¿El precio actual supera el objetivo y el umbral estricto de ganancia neta?
     if (currentPrice >= pos.targetSellPrice && currentPrice >= minAcceptablePrice) {
-      // Si estamos en tendencia alcista, aplicamos Trailing Take-Profit
+      // Si estamos en tendencia alcista fuerte, activamos Trailing Take-Profit para estirar las ganancias
       if (market.regime === 'TRENDING_UP') {
         const peak = pos.trailingMaxPrice || currentPrice;
-        const pullbackThreshold = peak * 0.996; // 0.4% de retroceso desde el pico
+        const pullbackThreshold = peak * 0.9965; // 0.35% de retroceso desde el pico más alto alcanzado
 
         if (currentPrice < pullbackThreshold) {
-          // El precio comenzó a retroceder desde el pico -> Cerramos con el máximo beneficio capturado
+          // Retroceso confirmado desde el pico -> Cerramos con el máximo beneficio posible
           const { newPortfolio, newTuner, closedTrade } = executeSell(
             updatedPortfolio,
             pos,
             currentPrice,
             market,
             updatedTuner,
-            `🎯 Trailing Take-Profit ejecutado en retroceso desde pico $${peak.toFixed(1)} (+${pos.unrealizedPnlPercent}%)`
+            `🎯 Trailing TP ejecutado en retroceso desde pico $${peak.toFixed(1)} (+${pos.unrealizedPnlPercent}%)`
           );
           return {
             decision: {
               action: 'SELL',
               targetPositionId: pos.id,
               orderAmountBtc: pos.amountBtc,
-              reason: `Venta exitosa en pico: Posición ${pos.id} cerrada con +$${closedTrade.netProfitUsd.toFixed(2)} (+${closedTrade.netProfitPercent.toFixed(2)}%)`,
+              reason: `Venta ganadora: Posición ${pos.id} cerrada con +$${closedTrade.netProfitUsd.toFixed(2)} (+${closedTrade.netProfitPercent.toFixed(2)}%)`,
             },
             updatedPortfolio: newPortfolio,
             updatedTuner: newTuner,
           };
         } else {
-          // Aún subiendo, permitimos que siga corriendo la ganancia
+          // Continúa subiendo -> Dejamos correr la ganancia (Infinity Mode)
           return {
             decision: {
               action: 'HOLD',
-              reason: `🚀 Trailing Take-Profit activo en ${pos.id}: Dejando correr ganancias (Pico actual: $${peak.toFixed(1)}, PnL: +${pos.unrealizedPnlPercent}%)`,
+              reason: `🚀 Trailing TP activo en ${pos.id}: Dejando correr ganancias (Pico: $${peak.toFixed(1)}, Flotante: +${pos.unrealizedPnlPercent}%)`,
             },
             updatedPortfolio,
             updatedTuner,
           };
         }
       } else {
-        // En mercado de rango o rebote, cerramos directamente al tocar el target
+        // En mercado de rango o rebote, vendemos directamente al tocar el target asegurando ganancia
         const { newPortfolio, newTuner, closedTrade } = executeSell(
           updatedPortfolio,
           pos,
@@ -130,7 +135,7 @@ export function evaluateStrategy(
             action: 'SELL',
             targetPositionId: pos.id,
             orderAmountBtc: pos.amountBtc,
-            reason: `Venta en objetivo: Posición ${pos.id} cerrada con +$${closedTrade.netProfitUsd.toFixed(2)} (+${closedTrade.netProfitPercent.toFixed(2)}%)`,
+            reason: `Venta en target: Posición ${pos.id} cerrada con +$${closedTrade.netProfitUsd.toFixed(2)} (+${closedTrade.netProfitPercent.toFixed(2)}%)`,
           },
           updatedPortfolio: newPortfolio,
           updatedTuner: newTuner,
@@ -140,59 +145,66 @@ export function evaluateStrategy(
   }
 
   // -------------------------------------------------------------
-  // REGLA 2: EVALUAR COMPRAS (ENTRADA INICIAL O TRAMOS DCA POR VOLATILIDAD)
+  // REGLA 2: EVALUAR COMPRAS AUTÓNOMAS (ANÁLISIS CUANTITATIVO CONSERVADOR)
   // -------------------------------------------------------------
   const openCount = updatedPortfolio.openPositions.length;
   const maxTranches = tuner.maxTranches;
 
-  // Si tenemos capital disponible suficiente (mínimo $5 USD para un tramo)
+  // Solo compra si hay capital disponible (mínimo $5 USD) y no se ha alcanzado el límite de tramos
   if (updatedPortfolio.availableUsdt >= 5 && openCount < maxTranches) {
     const spacingPercent = Math.max(tuner.baseGridSpacingPercent, market.suggestedGridSpacingPercent);
     const takeProfitPercent = Math.max(tuner.baseTakeProfitPercent, market.suggestedTakeProfitPercent);
 
-    // Caso A: No hay ninguna posición abierta -> Entrada Inicial inteligente
+    // CASO A: No hay ninguna posición abierta -> Búsqueda autónoma de entrada óptima
     if (openCount === 0) {
-      // Condiciones favorables: RSI no sobrecomprado (< 65) y no en caída vertical sin freno
-      if (market.rsi < 68) {
-        // Asignar primer tramo: 25% del capital disponible para conservar reservas
-        const trancheUsd = Number(Math.min(updatedPortfolio.availableUsdt * 0.35, 15).toFixed(2));
-        const { newPortfolio } = executeBuy(
-          updatedPortfolio,
-          currentPrice,
-          trancheUsd,
-          0,
-          takeProfitPercent,
-          'Entrada Inicial de Cuadrícula Spot'
-        );
+      // Filtros cuantitativos de alta probabilidad:
+      // 1. RSI no sobrecomprado (< 58), idealmente saliendo de sobreventa o en zona neutral-baja
+      // 2. Precio en la mitad inferior de las Bandas de Bollinger (descuento) o soporte de media
+      const isGoodPriceLevel = currentPrice <= (market.bbMiddle * 1.002);
+      const isRsiFavorable = market.rsi <= 58;
 
-        return {
-          decision: {
-            action: 'BUY',
-            orderAmountUsd: trancheUsd,
-            reason: `🟢 Entrada inicial en $${currentPrice.toFixed(1)} (RSI ${market.rsi}, Régimen: ${market.regime}). TP fijado en +${takeProfitPercent}%`,
-          },
-          updatedPortfolio: newPortfolio,
-          updatedTuner,
-        };
+      if (isGoodPriceLevel && isRsiFavorable) {
+        // Asignar primer tramo conservador: 28% del capital total para tener reservas si el precio retrocede
+        const trancheUsd = Number(Math.min(updatedPortfolio.availableUsdt * 0.28, 14).toFixed(2));
+        
+        if (trancheUsd >= 5) {
+          const { newPortfolio } = executeBuy(
+            updatedPortfolio,
+            currentPrice,
+            trancheUsd,
+            0,
+            takeProfitPercent,
+            'Entrada Cuantitativa Autónoma'
+          );
+
+          return {
+            decision: {
+              action: 'BUY',
+              orderAmountUsd: trancheUsd,
+              reason: `🤖 Entrada autónoma en $${currentPrice.toFixed(1)} (RSI ${market.rsi}, soporte Bollinger). TP fijado en +${takeProfitPercent}%`,
+            },
+            updatedPortfolio: newPortfolio,
+            updatedTuner,
+          };
+        }
       }
     } else {
-      // Caso B: Ya hay posiciones abiertas -> Compras escalonadas en descuento (DCA Dinámico)
-      // Buscamos el precio más bajo entre las posiciones abiertas
+      // CASO B: Ya hay posiciones abiertas -> DCA Dinámico en Descuentos (Solo en sobreventa confirmada)
       const lowestBuyPrice = Math.min(...updatedPortfolio.openPositions.map(p => p.buyPrice));
       const priceDropPercent = ((lowestBuyPrice - currentPrice) / lowestBuyPrice) * 100;
 
-      // Solo compramos si el precio cayó al menos el porcentaje de espaciado adaptativo
+      // El precio debe haber caído al menos el espaciado adaptativo determinado por la volatilidad
       if (priceDropPercent >= spacingPercent) {
-        // En caída libre, verificamos que el RSI muestre signos de piso/rebote (ej. RSI < 35 o empezando a curvar)
-        const isOversoldOrRebounding = market.rsi < 40 || currentPrice > market.bbLower;
+        // En caídas, solo compra si RSI muestra rebote o soporte fuerte en banda inferior
+        const isReboundOpportunity = market.rsi < 42 || currentPrice <= market.bbLower;
 
-        if (isOversoldOrRebounding) {
-          // Tamaño de tramo proporcional con multiplicador de DCA
+        if (isReboundOpportunity) {
+          // Tamaño de tramo progresivo para promediar a la baja eficientemente
           const baseTrancheUsd = updatedPortfolio.initialCapitalUsd / (maxTranches + 1);
           const trancheUsd = Number(
             Math.min(
               updatedPortfolio.availableUsdt,
-              baseTrancheUsd * Math.pow(tuner.dcaMultiplier, openCount * 0.5)
+              baseTrancheUsd * Math.pow(tuner.dcaMultiplier, openCount * 0.4)
             ).toFixed(2)
           );
 
@@ -210,7 +222,7 @@ export function evaluateStrategy(
               decision: {
                 action: 'BUY',
                 orderAmountUsd: trancheUsd,
-                reason: `🛒 Compra en descuento: Tramo #${openCount + 1} ejecutado a $${currentPrice.toFixed(1)} (-${priceDropPercent.toFixed(1)}% desde tramo anterior).`,
+                reason: `🛒 DCA Autónomo: Tramo #${openCount + 1} ejecutado a $${currentPrice.toFixed(1)} (-${priceDropPercent.toFixed(1)}% de descuento).`,
               },
               updatedPortfolio: newPortfolio,
               updatedTuner,
@@ -221,11 +233,13 @@ export function evaluateStrategy(
     }
   }
 
-  // Si no se cumple ninguna condición de compra o venta -> HOLD (Mantenemos y observamos)
+  // -------------------------------------------------------------
+  // REGLA 3: HOLD Y PROTECCIÓN (MONITOREO CONTINUO)
+  // -------------------------------------------------------------
   return {
     decision: {
       action: 'HOLD',
-      reason: `Monitoreando BTC ($${currentPrice.toFixed(1)}). Posiciones abiertas: ${openCount}/${maxTranches}. Régimen: ${market.regime}`,
+      reason: `IA analizando BTC ($${currentPrice.toFixed(1)}). Posiciones: ${openCount}/${maxTranches}. Esperando condiciones óptimas de beneficio o descuento.`,
     },
     updatedPortfolio,
     updatedTuner,
@@ -244,8 +258,10 @@ function executeBuy(
   const netInvestedUsd = investedUsd - fee;
   const amountBtc = Number((netInvestedUsd / price).toFixed(6));
 
-  // Cálculo del precio objetivo de venta: estricto costo + ganancia + comisiones
-  const targetSellPrice = Number((price * (1 + takeProfitPercent / 100 + BINANCE_FEE_RATE * 2)).toFixed(2));
+  // Venta garantizada estrictamente por encima de: precio + ganancia neta + comisión de compra + comisión de venta
+  const targetSellPrice = Number(
+    (price * (1 + takeProfitPercent / 100 + BINANCE_FEE_RATE * 2)).toFixed(2)
+  );
 
   const newPosition: Position = {
     id: `TK-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -332,7 +348,7 @@ function executeSell(
     profitFactor,
   };
 
-  // Autoaprendizaje: Entrenar y actualizar los hiperparámetros del bot
+  // El bot se auto-mejora con cada operación cerrada
   const newTuner = trainAndOptimize(tuner, closedTrade, portfolio.closedTrades);
 
   return { newPortfolio, newTuner, closedTrade };

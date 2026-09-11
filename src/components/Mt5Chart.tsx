@@ -12,7 +12,6 @@ interface Mt5ChartProps {
   symbol?: string;
   selectedTimeframe?: string;
   onTimeframeChange?: (tf: string) => void;
-  onQuickBuy?: () => void;
 }
 
 export const Mt5Chart: React.FC<Mt5ChartProps> = ({
@@ -23,7 +22,6 @@ export const Mt5Chart: React.FC<Mt5ChartProps> = ({
   symbol = 'BTCUSDT',
   selectedTimeframe = 'M1',
   onTimeframeChange,
-  onQuickBuy,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -398,15 +396,12 @@ export const Mt5Chart: React.FC<Mt5ChartProps> = ({
             </div>
           </div>
 
-          {/* Botón de Orden Rápida estilo MT5 */}
-          <button
-            onClick={onQuickBuy}
-            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs flex items-center space-x-1 transition-colors shadow-sm"
-            title="Nueva orden manual en spot"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Nueva Orden</span>
-          </button>
+          {/* Indicador de Trading Autónomo MT5 (Cero intervención manual) */}
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/60 border border-emerald-600/50 text-emerald-300 text-[11px] font-mono shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-bold hidden sm:inline">IA Auto-Trading</span>
+            <span className="font-bold sm:hidden">Auto</span>
+          </div>
 
           {/* Herramientas MT5 (Crosshair, Indicadores, Zoom) */}
           <div className="flex items-center space-x-1">
