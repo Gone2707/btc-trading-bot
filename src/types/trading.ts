@@ -99,6 +99,7 @@ export interface PortfolioState {
   mode: 'PAPER' | 'LIVE_BINANCE';
   isBotRunning: boolean;
   binanceConfigured?: boolean;
+  lastActiveTimestamp?: number;
 }
 
 export interface BotSettings {

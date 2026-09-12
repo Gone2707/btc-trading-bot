@@ -14,12 +14,16 @@ import { analyzeMarketRegime } from '../engine/regimeClassifier';
 import { evaluateStrategy } from '../engine/adaptiveGridStrategy';
 import {
   loadPortfolioState,
+  savePortfolioState,
   resetPortfolioState,
-  clearBrowserStorage,
 } from '../engine/paperTradingEngine';
-import { loadSelfTunerState } from '../engine/selfTuner';
+import {
+  loadSelfTunerState,
+  saveSelfTunerState,
+} from '../engine/selfTuner';
+import { processOfflineCatchUp } from '../engine/offlineCatchUp';
 import { Candle, MarketIntelligence, PortfolioState, SelfTunerState } from '../types/trading';
-import { CandlestickChart, Layers, History, Brain, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { CandlestickChart, Layers, History, Brain, Zap } from 'lucide-react';
 
 type MobileTab = 'CHART' | 'TRADE' | 'HISTORY' | 'AI';
 
@@ -36,6 +40,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<MobileTab>('CHART');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [lastNotification, setLastNotification] = useState<string | null>(null);
+  const [latencyMs, setLatencyMs] = useState<number>(35);
 
   const portfolioRef = useRef(portfolio);
   portfolioRef.current = portfolio;
@@ -45,6 +50,9 @@ export default function Dashboard() {
 
   const candlesRef = useRef(candles);
   candlesRef.current = candles;
+
+  const lastSaveTimeRef = useRef<number>(0);
+  const lastRegimeCalcRef = useRef<number>(0);
 
   // Carga de Velas según la temporalidad
   const loadKlines = useCallback(async (interval: string) => {
@@ -66,15 +74,39 @@ export default function Dashboard() {
     loadKlines(tf);
   };
 
-  const [latencyMs, setLatencyMs] = useState<number>(35);
-  const lastRegimeCalcRef = useRef<number>(0);
-
+  // 1. INICIALIZACIÓN: Cargar estado persistente + Offline Catch-Up
   useEffect(() => {
-    clearBrowserStorage();
-    loadKlines('M1');
+    async function initSystem() {
+      // A. Cargar estado guardado de inmediato
+      const savedPort = loadPortfolioState();
+      const savedTuner = loadSelfTunerState();
+      setPortfolio(savedPort);
+      setTuner(savedTuner);
+
+      // B. Cargar velas iniciales
+      await loadKlines('M1');
+
+      // C. Ejecutar Offline Catch-Up: Simular velas de Binance ocurridas mientras la web estuvo cerrada
+      try {
+        const catchUp = await processOfflineCatchUp(savedPort, savedTuner);
+        if (catchUp.report && catchUp.report.tradesClosed > 0) {
+          setPortfolio(catchUp.updatedPortfolio);
+          setTuner(catchUp.updatedTuner);
+          setLastNotification(
+            `⚡ Mercado recuperado en ausencia: ${catchUp.report.tradesClosed} operaciones cerradas con éxito (+${catchUp.report.profitEarnedUsd} USD sumados al balance).`
+          );
+        } else if (catchUp.report && catchUp.report.missedMinutes > 1) {
+          setPortfolio(catchUp.updatedPortfolio);
+          setTuner(catchUp.updatedTuner);
+        }
+      } catch (err) {
+        console.warn('Offline catch-up omitido o completado:', err);
+      }
+    }
+    initSystem();
   }, [loadKlines]);
 
-  // Conexión WebSocket a Binance y evaluación autónoma permanente (100% en RAM)
+  // 2. CONEXIÓN WEBSOCKET A BINANCE Y EVALUACIÓN AUTÓNOMA
   useEffect(() => {
     binanceFeed.connect('1m');
 
@@ -88,7 +120,7 @@ export default function Dashboard() {
       const currentTuner = tunerRef.current;
       const currentCandles = candlesRef.current;
 
-      // Throttle cálculo de indicadores complejos a cada 400ms para mantener 60 FPS
+      // Throttle cálculo de indicadores complejos a 400ms para mantener 60 FPS
       let currentMarket = market;
       if (now - lastRegimeCalcRef.current > 400) {
         currentMarket = analyzeMarketRegime(currentCandles, price);
@@ -96,7 +128,7 @@ export default function Dashboard() {
         lastRegimeCalcRef.current = now;
       }
 
-      // Evaluación cuantitativa autónoma sin intervención humana
+      // Evaluación cuantitativa autónoma
       const { decision, updatedPortfolio, updatedTuner } = evaluateStrategy(
         currentPort,
         currentMarket,
@@ -106,12 +138,23 @@ export default function Dashboard() {
 
       setPortfolio(updatedPortfolio);
 
+      // PERSISTENCIA INTELIGENTE:
+      // Si hubo una COMPRA o VENTA, guardar inmediatamente en disco
       if (decision.action !== 'HOLD') {
+        savePortfolioState(updatedPortfolio);
+        saveSelfTunerState(updatedTuner);
         setLastNotification(decision.reason);
+        lastSaveTimeRef.current = now;
+      } 
+      // Si el bot está en HOLD, guardar cada 2.5 segundos para no perder el estado ni saturar
+      else if (now - lastSaveTimeRef.current > 2500) {
+        savePortfolioState(updatedPortfolio);
+        lastSaveTimeRef.current = now;
       }
 
       if (updatedTuner !== currentTuner) {
         setTuner(updatedTuner);
+        saveSelfTunerState(updatedTuner);
       }
     });
 
@@ -138,14 +181,18 @@ export default function Dashboard() {
   }, []);
 
   const handleToggleBot = useCallback(() => {
-    setPortfolio((prev) => ({ ...prev, isBotRunning: !prev.isBotRunning }));
+    setPortfolio((prev) => {
+      const next = { ...prev, isBotRunning: !prev.isBotRunning };
+      savePortfolioState(next);
+      return next;
+    });
   }, []);
 
   const handleResetAccount = useCallback(() => {
-    if (window.confirm('¿Reiniciar saldo virtual a $50 USD? Se restablecerán las órdenes a cero.')) {
+    if (window.confirm('¿Reiniciar saldo virtual a $50 USD? Se restablecerán las órdenes y el historial.')) {
       const fresh = resetPortfolioState(50.0);
       setPortfolio(fresh);
-      setLastNotification('Saldo reiniciado a $50.00 USD en memoria.');
+      setLastNotification('Saldo reiniciado a $50.00 USD con éxito.');
     }
   }, []);
 
@@ -166,12 +213,16 @@ export default function Dashboard() {
   }, [portfolio, tuner, market]);
 
   const handleUpdateMode = useCallback((mode: 'PAPER' | 'LIVE_BINANCE') => {
-    setPortfolio((prev) => ({ ...prev, mode }));
+    setPortfolio((prev) => {
+      const next = { ...prev, mode };
+      savePortfolioState(next);
+      return next;
+    });
   }, []);
 
   return (
     <div className="min-h-screen bg-[#0e121a] text-slate-100 flex flex-col pb-16 md:pb-6">
-      {/* Header MT5 Principal */}
+      {/* Header MT5 Principal con Latencia en vivo */}
       <Header
         portfolio={portfolio}
         currentPrice={currentPrice}
@@ -180,17 +231,17 @@ export default function Dashboard() {
         onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
-      {/* Banner de Modo 100% Autónomo */}
+      {/* Banner de Modo 100% Autónomo con Persistencia Activa */}
       <div className="bg-[#131722] border-b border-[#1e2638] px-4 py-2 flex items-center justify-between text-xs font-mono text-gray-300">
         <div className="flex items-center space-x-2">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-emerald-400 font-bold">OPERACIÓN 100% AUTÓNOMA POR IA:</span>
+          <span className="text-emerald-400 font-bold">IA AUTÓNOMA ACTIVA:</span>
           <span className="hidden sm:inline text-gray-400">
-            El bot analiza el mercado y ejecuta compras/ventas automáticamente sin intervención manual. Regla fija: Jamás vende a pérdida.
+            Persistencia protegida contra recargas • Recuperación en desconexión • Regla fija: Jamás vende a pérdida.
           </span>
         </div>
         <div className="text-[11px] text-amber-400 font-semibold hidden md:block">
-          Spot Seguro • 0% Liquidación
+          Crecimiento Continuo • Spot 0x
         </div>
       </div>
 

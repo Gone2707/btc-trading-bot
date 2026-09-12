@@ -1,31 +1,50 @@
 import { ClosedTrade, SelfTunerState } from '../types/trading';
 
+const TUNER_STORAGE_KEY = 'btc_bot_selftuner_v2';
+
 export function getInitialSelfTunerState(): SelfTunerState {
   return {
-    version: 1,
+    version: 2,
     generation: 1,
     successfulCycles: 0,
-    baseGridSpacingPercent: 1.1,
-    baseTakeProfitPercent: 1.6,
+    baseGridSpacingPercent: 0.95, // Optimizado para micro-ciclos en BTC
+    baseTakeProfitPercent: 1.15,   // Objetivo alcanzable que genera ganancias constantes
     dcaMultiplier: 1.25,
     maxTranches: 4,
-    minProfitHurdlePercent: 0.6, // Mínimo para cubrir comisiones de Binance + ganancia neta
+    minProfitHurdlePercent: 0.5, // Mínimo para cubrir comisiones de Binance (0.2%) + ganancia neta
     learningLog: [
-      'Modelo de autoaprendizaje en memoria RAM listo (Cero localStorage).',
-      'Regla fija activa: Venta estrictamente condicionada a ganancia neta positiva.',
+      'Modelo de autoaprendizaje inicializado con perfil Conservador Spot.',
+      'Regla estricta: Jamás vender a pérdida. TP mínimo dinámico activo.',
     ],
   };
 }
 
-/**
- * 100% EN MEMORIA (RAM) - CERO LOCALSTORAGE
- */
 export function loadSelfTunerState(): SelfTunerState {
+  if (typeof window === 'undefined') return getInitialSelfTunerState();
+  try {
+    const raw = localStorage.getItem(TUNER_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.generation === 'number') {
+        return {
+          ...getInitialSelfTunerState(),
+          ...parsed,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Error leyendo estado de SelfTuner:', err);
+  }
   return getInitialSelfTunerState();
 }
 
-export function saveSelfTunerState(_state: SelfTunerState): void {
-  // Sin almacenamiento en disco
+export function saveSelfTunerState(state: SelfTunerState): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(TUNER_STORAGE_KEY, JSON.stringify(state));
+  } catch (err) {
+    console.error('Error guardando SelfTuner:', err);
+  }
 }
 
 export function trainAndOptimize(
@@ -41,28 +60,34 @@ export function trainAndOptimize(
   const avgProfit = allRecent.reduce((acc, t) => acc + t.netProfitPercent, 0) / allRecent.length;
   const avgDurationMin = allRecent.reduce((acc, t) => acc + t.durationMinutes, 0) / allRecent.length;
 
+  // Cada 3 operaciones completadas, avanza una generación de auto-mejora
   if (next.successfulCycles % 3 === 0) {
     next.generation += 1;
 
-    if (avgDurationMin < 45 && avgProfit > 1.2) {
+    // Si los ciclos se cierran muy rápido (< 35 min) con 100% de éxito, incrementamos ligeramente el TP para ganar más
+    if (avgDurationMin < 35 && avgProfit > 0.9) {
       const prevTP = next.baseTakeProfitPercent;
-      next.baseTakeProfitPercent = Math.min(3.5, Number((next.baseTakeProfitPercent + 0.15).toFixed(2)));
-      logEntries.push(`[Gen ${next.generation}] 📈 Ciclos rápidos (${avgDurationMin.toFixed(0)}m). Auto-ajuste: TP aumentado de ${prevTP}% a ${next.baseTakeProfitPercent}% para capturar más valor.`);
-    } else if (avgDurationMin > 240) {
+      next.baseTakeProfitPercent = Math.min(3.0, Number((next.baseTakeProfitPercent + 0.12).toFixed(2)));
+      logEntries.push(`[Gen ${next.generation}] 📈 Ciclos veloces (${avgDurationMin.toFixed(0)}m). TP aumentado de ${prevTP}% a ${next.baseTakeProfitPercent}% para capturar más ganancia.`);
+    } 
+    // Si el mercado se vuelve lento (> 180 min), ajustamos la cuadrícula más cerca para entrar y salir con más frecuencia
+    else if (avgDurationMin > 180) {
       const prevSpacing = next.baseGridSpacingPercent;
-      next.baseGridSpacingPercent = Math.max(0.8, Number((next.baseGridSpacingPercent - 0.1).toFixed(2)));
-      logEntries.push(`[Gen ${next.generation}] ⏳ Mercado lento. Auto-ajuste: Reduciendo espaciado a ${next.baseGridSpacingPercent}% para mayor frecuencia.`);
+      next.baseGridSpacingPercent = Math.max(0.7, Number((next.baseGridSpacingPercent - 0.08).toFixed(2)));
+      logEntries.push(`[Gen ${next.generation}] ⏳ Mercado en pausa. Espaciado ajustado a ${next.baseGridSpacingPercent}% para mayor dinamismo.`);
     }
 
+    // Reforzar DCA si hubo caídas
     const crashTrades = allRecent.filter(t => t.regime === 'DOWNTREND_DEFENSIVE');
     if (crashTrades.length >= 2) {
-      next.dcaMultiplier = Math.min(1.5, Number((next.dcaMultiplier + 0.05).toFixed(2)));
-      logEntries.push(`[Gen ${next.generation}] 🛡️ DCA adaptado a caídas: Multiplicador a ${next.dcaMultiplier}x.`);
+      next.dcaMultiplier = Math.min(1.45, Number((next.dcaMultiplier + 0.05).toFixed(2)));
+      logEntries.push(`[Gen ${next.generation}] 🛡️ DCA reforzado: Multiplicador ajustado a ${next.dcaMultiplier}x.`);
     }
   }
 
   logEntries.push(`Operación ${newTrade.ticket} cerrada con +$${newTrade.netProfitUsd.toFixed(2)} (+${newTrade.netProfitPercent.toFixed(2)}%).`);
 
-  next.learningLog = [...logEntries, ...next.learningLog].slice(0, 25);
+  next.learningLog = [...logEntries, ...next.learningLog].slice(0, 30);
+  saveSelfTunerState(next);
   return next;
 }

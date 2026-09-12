@@ -1,6 +1,7 @@
 import { PortfolioState } from '../types/trading';
 
-export const DEFAULT_INITIAL_BALANCE = 50.0; // $50 USD solicitados por el usuario
+export const DEFAULT_INITIAL_BALANCE = 50.0;
+const STORAGE_KEY = 'btc_bot_portfolio_v2';
 
 export function getInitialPortfolioState(): PortfolioState {
   return {
@@ -20,35 +21,57 @@ export function getInitialPortfolioState(): PortfolioState {
     closedTrades: [],
     mode: 'PAPER',
     isBotRunning: true,
+    lastActiveTimestamp: Date.now(),
   };
 }
 
 /**
- * 100% EN MEMORIA (RAM) - CERO USO DE LOCALSTORAGE
- * No ocupa memoria persistente en el navegador.
+ * Carga segura de portafolio desde almacenamiento persistente del navegador.
+ * Garantiza que al recargar (F5) o cerrar el navegador, el balance, posiciones e historial NO se borren.
  */
 export function loadPortfolioState(): PortfolioState {
+  if (typeof window === 'undefined') return getInitialPortfolioState();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.availableUsdt === 'number') {
+        return {
+          ...getInitialPortfolioState(),
+          ...parsed,
+          // Asegurar que las posiciones e historial sean arreglos válidos
+          openPositions: Array.isArray(parsed.openPositions) ? parsed.openPositions : [],
+          closedTrades: Array.isArray(parsed.closedTrades) ? parsed.closedTrades : [],
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Error leyendo estado persistente del portafolio:', err);
+  }
   return getInitialPortfolioState();
 }
 
-export function savePortfolioState(_state: PortfolioState): void {
-  // Sin operaciones de almacenamiento en disco / localStorage
-}
-
-export function clearBrowserStorage(): void {
+/**
+ * Guarda el portafolio en almacenamiento persistente de forma segura y ligera.
+ */
+export function savePortfolioState(state: PortfolioState): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.removeItem('btc_bot_portfolio_v1');
-    localStorage.removeItem('btc_bot_selftuner_v1');
-    localStorage.removeItem('btc_bot_settings_v1');
-  } catch (e) {
-    // Silencioso
+    const toSave: PortfolioState = {
+      ...state,
+      lastActiveTimestamp: Date.now(),
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  } catch (err) {
+    console.error('Error guardando estado persistente:', err);
   }
 }
 
+/**
+ * Reinicia voluntariamente la cuenta a los $50 USD originales si el usuario pulsa Reset.
+ */
 export function resetPortfolioState(initialBalance: number = DEFAULT_INITIAL_BALANCE): PortfolioState {
-  clearBrowserStorage();
-  return {
+  const freshState: PortfolioState = {
     initialCapitalUsd: initialBalance,
     availableUsdt: initialBalance,
     heldBtc: 0,
@@ -65,5 +88,8 @@ export function resetPortfolioState(initialBalance: number = DEFAULT_INITIAL_BAL
     closedTrades: [],
     mode: 'PAPER',
     isBotRunning: true,
+    lastActiveTimestamp: Date.now(),
   };
+  savePortfolioState(freshState);
+  return freshState;
 }

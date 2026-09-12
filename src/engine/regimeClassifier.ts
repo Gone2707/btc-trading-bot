@@ -77,12 +77,12 @@ export function analyzeMarketRegime(candles: Candle[], currentPrice: number): Ma
     aiConfidence = 90;
     decisions.push(`🛡️ Zona de descuento/sobreventa detectada (RSI ${rsi}). Modo defensivo: acumulando tramos solo en rebotes confirmados, NUNCA venta a pérdida.`);
   } else {
-    // Régimen de Rango / Lateral (El favorito para swing rápido)
+    // Régimen de Rango / Lateral (El favorito para swing rápido y ganancias frecuentes)
     regime = 'RANGING';
-    suggestedGridSpacingPercent = Math.max(0.75, Math.min(1.5, atrPercent * 0.65));
-    suggestedTakeProfitPercent = Math.max(1.0, suggestedGridSpacingPercent * 1.25);
+    suggestedGridSpacingPercent = Math.max(0.7, Math.min(1.2, atrPercent * 0.6));
+    suggestedTakeProfitPercent = Math.max(0.9, Math.min(1.35, suggestedGridSpacingPercent * 1.25));
     aiConfidence = 94;
-    decisions.push(`🔄 Mercado en Rango Lateral. Cuadrícula ajustada a ${suggestedGridSpacingPercent.toFixed(2)}% con TP de ${suggestedTakeProfitPercent.toFixed(2)}% para capturar oscilaciones.`);
+    decisions.push(`🔄 Mercado en Rango Lateral. Cuadrícula ajustada a ${suggestedGridSpacingPercent.toFixed(2)}% con TP ágil de +${suggestedTakeProfitPercent.toFixed(2)}% para asegurar ganancias continuas.`);
   }
 
   return {
